@@ -7,13 +7,44 @@
 
 import pyrealsense2 as rs
 import numpy as np
-import cv2
+import os 
+import sys
 import pdb
+import rospy
+
+try:
+    sys.path = ['/home/rainbow/workspace/aruco_marker', '/home/rainbow/anaconda3/envs/aruco/lib/python36.zip', '/home/rainbow/anaconda3/envs/aruco/lib/python3.6', '/home/rainbow/anaconda3/envs/aruco/lib/python3.6/lib-dynload', '/home/rainbow/anaconda3/envs/aruco/lib/python3.6/site-packages']
+except:
+    pdb.set_trace()
+import cv2
 import cv2.aruco as aruco
 import matplotlib.pyplot as plt
 from datetime import datetime
 import copy
 
+
+def deproject(center,depth,K,pose=None):
+    """
+    center.shape = [1,2]
+    depth.shape = [1,1]
+    K.shape = [3,3]
+    """
+    out_gt = center * depth
+    out_gt = np.concatenate((out_gt, depth), 1)
+    # out_gt = [1,3]
+    inv_K = np.linalg.inv(K.T)
+    xyz = np.dot(out_gt, inv_K)
+    return xyz
+
+def project(xyz, K):
+    """
+    xyz: [N, 3]
+    K: [3, 3]
+    RT: [3, 4]
+    """
+    xyz = np.dot(xyz, K.T)
+    xy = xyz[:, :2] / xyz[:, 2:]
+    return xy
 
 # Configure depth and color streams
 pipeline = rs.pipeline()
@@ -24,8 +55,8 @@ H = 480
 # video capture for test video backup
 # cap = cv2.VideoCapture(0)
 # fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-filename = datetime.now().strftime("%Y_%m_%d-%I_%M_%S_%p")
-out = cv2.VideoWriter(filename+'.avi', cv2.VideoWriter_fourcc('M','J','P','G'), 20.0, (W,H))
+# filename = datetime.now().strftime("%Y_%m_%d-%I_%M_%S_%p")
+# out = cv2.VideoWriter(filename+'.avi', cv2.VideoWriter_fourcc('M','J','P','G'), 20.0, (W,H))
 saveVideo_on = False
 
 config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
@@ -57,47 +88,20 @@ try:
         gray = cv2.cvtColor(color_image, cv2.COLOR_RGB2GRAY)  # Change
         img_hsv = cv2.cvtColor(color_image, cv2.COLOR_BGR2HSV)
 
-        # add aruco marker
-        ############################################################################
-
-        aruco_dict = aruco.Dictionary_get(aruco.DICT_6X6_250)  # Use 5x5 dictionary to find markers
-        parameters = aruco.DetectorParameters_create()  # Marker detection parameters
-
-        # lists of ids and the corners beloning to each id
         cam_matrix = np.array([[color_intrin.fx,0,color_intrin.ppx],[0,color_intrin.fy,color_intrin.ppy],[0,0,1]])
-        dist = np.array([color_intrin.coeffs])
-        corners, ids, rejected_img_points = aruco.detectMarkers(gray, aruco_dict, parameters=parameters, cameraMatrix=cam_matrix,distCoeff=dist)
 
-        if np.all(ids != None):
-            # estimate pose of each marker and return the values
-            # rvet and tvec-different from camera coefficients
-            rvec, tvec, _ = aruco.estimatePoseSingleMarkers(corners, 0.05, cam_matrix, dist)
-            for i in range(0, ids.size):
-                # draw axis for the aruco markers
-                aruco.drawAxis(color_image, cam_matrix, dist, rvec[i], tvec[i], 0.05)
-            # draw a square around the markers
-            aruco.drawDetectedMarkers(color_image, corners)
-
-            # code to show ids of the marker found
-            strg = ''
-            for i in range(0, ids.size):
-                strg = str(ids[i][0])
-                center = corners[i][0].min(0)
-                cv2.putText(color_image, strg, (center[0], center[1]), font, 0.5, (255, 0,0 ), 1, cv2.LINE_AA)
-        else:
-            # code to show 'No Ids' when no markers are found
-            cv2.putText(color_image, "No Ids", (0, 64), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
-        ###############################################################################
-
-        # Apply colormap on depth image (image must be converted to 8-bit per pixel first)
         depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image), cv2.COLORMAP_BONE)
         # gray_colormap = cv2.applyColorMap(cv2.convertScaleAbs(gray), cv2.COLORMAP_BONE)
 
         ###############################################################################
         ###### red marker detection
+        
+        ##################################
+        # change color value
+        low_red = np.array([161, 155, 84])   # (161,155,84)
+        high_red = np.array([179, 255, 255]) # (179,255,255)
+        ##################################
 
-        low_red = np.array([161, 155, 84])
-        high_red = np.array([179, 255, 255])
         img_mask = cv2.inRange(img_hsv, low_red, high_red)
         img_mask = cv2.medianBlur(img_mask,7)
         img_result = cv2.bitwise_and(color_image, color_image, mask = img_mask)
@@ -107,35 +111,58 @@ try:
         ###############################################################################
         ###### houghLineP      # https://076923.github.io/posts/Python-opencv-28/
 
-        canny = cv2.Canny(img_mask, 5000, 1500, apertureSize = 5, L2gradient = True)
-        lines = cv2.HoughLinesP(canny, 1, np.pi / 45, 50, minLineLength = 10, maxLineGap = 50)
-        x_cum = 0
-        y_xum = 0
+        # canny = cv2.Canny(img_mask, 5000, 1500, apertureSize = 5, L2gradient = True)
+        lines = cv2.HoughLinesP(img_mask, 1, np.pi, 30, minLineLength = 10, maxLineGap = 50)
+        pixel_x = 0
+        pixel_y = 0
         if lines is not None:
             for i in lines:
                 # print("a: {}, b: {}, c: {}, d: {}".format(i[0][0], i[0][1], i[0][2], i[0][3]))
                 cv2.line(color_image, (i[0][0], i[0][1]), (i[0][2], i[0][3]), (0, 0, 255), 2)
-                x_cum += np.mean([i[0][0], i[0][0]])
-            x_cum = int(round(x_cum / len(lines)))
-            cv2.line(color_image, (x_cum, 0), (x_cum, H), (0, 0, 255), 2)
+                pixel_x += np.mean([i[0][0], i[0][2]])
+                pixel_y += np.mean([i[0][1], i[0][3]])
+            pixel_x = int(round(pixel_x / len(lines)))
+            pixel_y = int(round(pixel_y / len(lines)))
+            cv2.line(color_image, (pixel_x, 0), (pixel_x, H), (0, 0, 255), 2)
         
+
+        # visualize guide line
         left = int(W*0.4)
         right = int(W*0.6)
         cv2.line(color_image, (left, 0), (left, H), (0, 255, 0), 2)
         cv2.line(color_image, (right, 0), (right, H), (0, 255, 0), 2)
+        
 
-        if x_cum in range(left, right):
+        if pixel_x in range(left, right):
             cv2.putText(color_image, "Grap!", (280, 64), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
-        elif x_cum < left:
+        elif pixel_x < left:
             cv2.putText(color_image, "right ->", (170, 64), font, 1, (0, 0, 255), 2, cv2.LINE_AA)
-        elif x_cum > right:
+        elif pixel_x > right:
             cv2.putText(color_image, "<- left", (350, 64), font, 1, (0, 0, 255), 2, cv2.LINE_AA)
         else:
             cv2.putText(color_image, "", (350, 64), font, 1, (0, 0, 255), 2, cv2.LINE_AA)
+        
 
+        cv2.circle(color_image, (pixel_x, pixel_y), 10, (255, 0, 0), 4)
+
+        ##############################################################################
+        # output results
+        depth_pixel = depth_image[pixel_y,pixel_x]/1000.0
+        # predict camera coordinate xyz
+        # xyz.shape = [3], meter 
+        xyz = deproject(np.array([pixel_x,pixel_y]).reshape(1,2),np.array(depth_pixel).reshape(1,1),K=cam_matrix)[0]
+        ##############################################################################
+
+        # cm 
+        visual_xyz = np.round(xyz * 1000)
+        # proj_xy = project(xyz,K=cam_matrix)
+        # print("a: {}, b: {}, c: {}".format(visual_xyz[0,0], visual_xyz[0,1], xyz[0,2]))
+
+        cv2.putText(color_img_back, "{}, {}, {}".format(pixel_x, pixel_y, depth_pixel ), (350, 64), font, 1, (0, 0, 255), 2, cv2.LINE_AA)
+        cv2.putText(color_img_back, "{}, {}, {}".format(visual_xyz[0], visual_xyz[1], visual_xyz[2]), (300, 150), font, 1, (0, 0, 255), 2, cv2.LINE_AA)
 
         cv2.imshow('img_mask', img_mask)
-        cv2.imshow('canny', canny)
+        # cv2.imshow('canny', canny)
         ###############################################################################
         
         # Stack both images horizontally
@@ -145,26 +172,27 @@ try:
         # Show images
         # cv2.namedWindow('RealSense', cv2.WINDOW_AUTOSIZE)
         # cv2.moveWindow('RealSense',500,100)
+        cv2.imshow('depth image', depth_colormap)
         cv2.imshow('RealSense', color_image)
         color_img_back
         cv2.imshow("Input", color_img_back)
-        if saveVideo_on:
-            color_img_back = cv2.flip(color_img_back,180)
-            out.write(color_img_back)
+        # if saveVideo_on:
+        #     color_img_back = cv2.flip(color_img_back,180)
+        #     out.write(color_img_back)
 
         key = cv2.waitKey(1)
-        if key == 27: # ESC
-            break
-        elif key == 32: # space
-            saveVideo_on = True
-            print("space")
-        elif key == 115: # s
-            saveVideo_on = False
-            print('stop')
+        # if key == 27: # ESC
+        #     break
+        # elif key == 32: # space
+        #     saveVideo_on = True
+        #     print("space")
+        # elif key == 115: # s
+        #     saveVideo_on = False
+        #     print('stop')
 finally:
     # Stop streaming
     pipeline.stop()
     # Release everything if job is finished
     # cap.release()
-    out.release()
+    # out.release()
     cv2.destroyAllWindows()

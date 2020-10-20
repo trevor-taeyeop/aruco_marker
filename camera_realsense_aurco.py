@@ -5,10 +5,16 @@
 ##      Open CV and Numpy integration        ##
 ###############################################
 
+
+import os 
+import sys
+import pdb
+pdb.set_trace()
+sys.path = ['/home/rainbow/workspace/aruco_marker', '/home/rainbow/anaconda3/envs/aruco/lib/python36.zip', '/home/rainbow/anaconda3/envs/aruco/lib/python3.6', '/home/rainbow/anaconda3/envs/aruco/lib/python3.6/lib-dynload', '/home/rainbow/anaconda3/envs/aruco/lib/python3.6/site-packages']
+
 import pyrealsense2 as rs
 import numpy as np
 import cv2
-import pdb
 import cv2.aruco as aruco
 import matplotlib.pyplot as plt
 
